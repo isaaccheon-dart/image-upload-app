@@ -3,8 +3,17 @@ const multer = require('multer');
 const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
+const http = require('http');
+const { Server } = require('socket.io');
 
 const app = express();
+const server = http.createServer(app);
+const io = new Server(server, {
+  cors: {
+    origin: "http://localhost:5173", // Vite dev server
+    methods: ["GET", "POST"]
+  }
+});
 const PORT = 5001;
 
 // Enable CORS for React app
@@ -80,6 +89,59 @@ app.use((error, req, res, next) => {
   res.status(500).json({ error: error.message });
 });
 
-app.listen(PORT, () => {
+// Socket.IO connection handling
+const connectedUsers = new Map(); // Store userId -> socketId mapping
+
+io.on('connection', (socket) => {
+  console.log('User connected:', socket.id);
+
+  // Register user with their custom ID
+  socket.on('register', (userId) => {
+    connectedUsers.set(userId, socket.id);
+    socket.userId = userId;
+    console.log(`User registered: ${userId} with socket ${socket.id}`);
+    socket.emit('registered', { userId, socketId: socket.id });
+  });
+
+  // Handle image sharing to specific recipient
+  socket.on('shareImage', ({ recipientId, imageData }) => {
+    const recipientSocketId = connectedUsers.get(recipientId);
+
+    if (recipientSocketId) {
+      io.to(recipientSocketId).emit('receiveImage', {
+        senderId: socket.userId || 'Anonymous',
+        imageUrl: imageData.imageUrl,
+        filename: imageData.filename,
+        timestamp: new Date().toISOString()
+      });
+      socket.emit('shareSent', { success: true, recipientId });
+      console.log(`Image shared from ${socket.userId} to ${recipientId}`);
+    } else {
+      socket.emit('shareError', { error: 'Recipient not found or offline' });
+      console.log(`Recipient ${recipientId} not found`);
+    }
+  });
+
+  // Broadcast to all connected users (optional feature)
+  socket.on('broadcastImage', (imageData) => {
+    socket.broadcast.emit('receiveImage', {
+      senderId: socket.userId || 'Anonymous',
+      imageUrl: imageData.imageUrl,
+      filename: imageData.filename,
+      timestamp: new Date().toISOString()
+    });
+    console.log(`Image broadcast from ${socket.userId}`);
+  });
+
+  // Handle disconnect
+  socket.on('disconnect', () => {
+    if (socket.userId) {
+      connectedUsers.delete(socket.userId);
+      console.log(`User disconnected: ${socket.userId}`);
+    }
+  });
+});
+
+server.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
 });
